@@ -1,4 +1,4 @@
-(ns dots
+(ns dots.dots
   "A simulation of colliding dots, highly inspired by rich's ants
   https://github.com/juliangamble/clojure-ants-simulation")
 
