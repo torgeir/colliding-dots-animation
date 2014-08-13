@@ -1,6 +1,6 @@
-; highly inspired by https://github.com/juliangamble/clojure-ants-simulation
-
-;(ns dots)
+(ns dots
+  "A simulation of colliding dots, highly inspired by rich's ants
+  https://github.com/juliangamble/clojure-ants-simulation")
 
 (def running
   "is the animation running"
@@ -20,13 +20,14 @@
 (defn- create-world
   "creates a world of refs to cells, each with x and y coordinates"
   []
-  (apply vector
-         (map (fn [x]
-                (apply vector
-                       (map (fn [y]
-                              (ref (Cell. x y)))
-                            (range dimension))))
-              (range dimension))))
+  (let [dimensions (range dimension)]
+    (apply vector
+          (map (fn [x]
+                 (apply vector
+                        (map (fn [y]
+                               (ref (Cell. x y)))
+                             dimensions)))
+               dimensions))))
 
 (def world
   "the world, holding refs to cells, some cells with dots"
@@ -91,24 +92,20 @@
 
 (defn- move-to
   "in transaction: attempts to move a dot to the next position, or changes the dots direction if it cant move where it wanted"
-  [cell-ref next-x next-y dot]
-  (let [cell         @cell-ref
-        x            (:x cell)
-        y            (:y cell)
-        old-loc      [x y]
-        new-loc      [next-x next-y]]
+  [old-loc next-x next-y dot]
+  (let [new-loc [next-x next-y]]
     (if (dot-can-move-to? next-x next-y)
       (do
-        (alter cell-ref dissoc :dot)
+        (alter (place old-loc) dissoc :dot)
         (alter (place new-loc) assoc :dot dot)
         new-loc)
       (do
-        (alter cell-ref assoc :dot
+        (alter (place old-loc) assoc :dot
                (assoc (rand-dot) :color (:color dot)))
         old-loc))))
 
 (defn- move-loop
-  "in transaction: agent move loop - updates a dot's position in the world"
+  "in transaction: agent move loop - updates a dot's position in the world. returns the new position that is keps in the agent."
   [location]
   (let [cell-ref (place location)
         cell     @cell-ref
@@ -122,14 +119,14 @@
       (when dot
         (when running
           (send-off *agent* #'move-loop))
-        (move-to cell-ref next-x next-y dot)))))
+        (move-to location next-x next-y dot)))))
 
 (def dots
   "list of agents for locations for each dot"
   (create-dots))
 
 (defn start-move-loop
-  "kicks of the move loop per agent"
+  "kicks of a move loop agent per dot"
   []
   (doall (map #(send-off % move-loop) dots)))
 
@@ -161,10 +158,8 @@
 (defn- render-cell
   "renders a cell in a given color"
   [bg cell color]
-  (let [x     (:x cell)
-        y     (:y cell)
-        pos-x (* x scale)
-        pos-y (* y scale)
+  (let [pos-x (* (:x cell) scale)
+        pos-y (* (:y cell) scale)
         end-x (+ scale pos-x)
         end-y (+ scale pos-y)]
     (doto bg
@@ -174,8 +169,8 @@
 (defn- render-cells
   "renders each of the world's cells"
   [bg world]
-  (doseq [cell-ref (flatten world)]
-    (let [cell @cell-ref]
+  (doseq [each-cell-ref (flatten world)]
+    (let [cell @each-cell-ref]
       (render-cell bg cell (cell-color cell)))))
 
 (defn- render [g]
@@ -189,15 +184,11 @@
     (.drawImage g img 0 0 nil)
     (.dispose bg)))
 
-(defn- jpanel
-  "subclasses JPanel to call render when paint is called"
-  []
-  (proxy [JPanel] []
-    (paint [g] (render g))))
-
 (def panel
-  (doto (jpanel)
-    (.setPreferredSize (Dimension. size size))))
+  "subclasses JPanel to call render when paint is called"
+  (doto (proxy [JPanel] []
+          (paint [g] (render g)))
+        (.setPreferredSize (Dimension. size size))))
 
 (def frame
   (doto (JFrame.)
