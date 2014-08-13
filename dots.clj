@@ -1,15 +1,24 @@
+; highly inspired by https://github.com/juliangamble/clojure-ants-simulation
+
 ;(ns dots)
 
-(def running true)
-(def running false)
+(def running
+  "is the animation running"
+  true)
 
-(def dimension 100)
-(def num-dots 25)
+(def dimension
+  "world dimensions"
+  50)
 
-(defrecord Cell [x y]) ; also :dot
-(defrecord Dot [])
+(def num-dots
+  "number of dots to animate"
+  50)
 
-(defn create-world
+(defrecord Cell [x y]) ; and :dot
+(defrecord Dot [dir-x dir-y color])
+
+(defn- create-world
+  "creates a world of refs to cells, each with x and y coordinates"
   []
   (apply vector
          (map (fn [x]
@@ -19,99 +28,137 @@
                             (range dimension))))
               (range dimension))))
 
-(def world (create-world))
+(def world
+  "the world, holding refs to cells, some cells with dots"
+  (create-world))
 
-(defn place
-  "looks up a cell in the world"
+(defn- place
+  "looks up a cell-ref in the world"
   [[x y]]
   (-> world
       (nth x)
       (nth y)))
 
-(defn create-dot
-  "in transaction: add a dot to a location in the world"
+(defn- dot-in-location?
+  "tests if a dot exists in the cell in a location"
+  [x y]
+  (let [cell-ref (place [x y])]
+    (:dot @cell-ref)))
+
+(defn- dot-can-move-to?
+  "tests if dot can be moved to a location; it is within the world, it doesn't have a dot already"
+  [x y]
+  (and (< x dimension)
+       (< y dimension)
+       (>= x 0)
+       (>= y 0)
+       (not (dot-in-location? x y))))
+
+(defn- rand-dir
+  "picks a random direction, [-1 1]"
+  []
+  (- 1 (rand-int 3)))
+
+(defn- rand-color
+  "picks a random color"
+  []
+  (java.awt.Color. (rand-int 256) (rand-int 256) (rand-int 256)))
+
+(defn- rand-dot
+  "initializes a dot, with random x and y directions, and a random color"
+  []
+  (Dot. (rand-dir) (rand-dir) (rand-color)))
+
+(defn- add-dot-to-location
+  "in transaction: associates a dot with a location in the world. returns an agent on the location"
   [location]
   (let [cell-ref (place location)
-        dot      (Dot.)]
+        dot      (rand-dot)]
     (alter cell-ref assoc :dot dot)
     (agent location)))
 
-(defn location-has-dot?
-  [x y]
-  (let [location (place [x y])]
-    (:dot @location)))
-
-(defn setup-dots
-  "places dots around the world"
+(defn- create-dots
+  "creates num-dots number of dots around the world. returns list of agents on their locations"
   []
   (doall
     (for [n (range num-dots)]
       (dosync
-        (create-dot [(rand-int dimension) (rand-int dimension)])))))
+        (add-dot-to-location [(rand-int dimension) (rand-int dimension)])))))
 
-(def move-sleep-ms 150)
+(def move-sleep-ms
+  "ms to sleep between each attempt move of a dot"
+  100)
 
-(defn rand-bool
-  ""
-  []
-  (= 0 (rand-int 2)))
-
-(defn move-to
-  "in transaction: moves a dot from x y to next-x next-y"
+(defn- move-to
+  "in transaction: attempts to move a dot to the next position, or changes the dots direction if it cant move where it wanted"
   [cell-ref next-x next-y dot]
-  (do
-    (alter cell-ref dissoc :dot)
-    (alter (place [next-x next-y]) assoc :dot dot)
-    [next-x next-y]))
+  (let [cell         @cell-ref
+        x            (:x cell)
+        y            (:y cell)
+        old-loc      [x y]
+        new-loc      [next-x next-y]]
+    (if (dot-can-move-to? next-x next-y)
+      (do
+        (alter cell-ref dissoc :dot)
+        (alter (place new-loc) assoc :dot dot)
+        new-loc)
+      (do
+        (alter cell-ref assoc :dot
+               (assoc (rand-dot) :color (:color dot)))
+        old-loc))))
 
-(defn move
-  "in transaction: moves a dot around the world"
+(defn- move-loop
+  "in transaction: agent move loop - updates a dot's position in the world"
   [location]
   (let [cell-ref (place location)
         cell     @cell-ref
         dot      (:dot cell)
-        x        (:x cell)
-        y        (:y cell)
-        move-x   (rand-bool)
-        move-y   (not move-x)
-        prev-x   (mod (- x 1) dimension)
-        next-x   (mod (+ x 1) dimension)
-        prev-y   (mod (- y 1) dimension)
-        next-y   (mod (+ y 1) dimension)]
+        dir-x    (:dir-x dot)
+        dir-y    (:dir-y dot)
+        next-x   (+ (:x cell) dir-x)
+        next-y   (+ (:y cell) dir-y)]
     (Thread/sleep move-sleep-ms)
     (dosync
       (when dot
         (when running
-          (send-off *agent* #'move))
-        (cond
-          move-x
-            (cond
-              (not (location-has-dot? x next-y)) (move-to cell-ref x next-y dot)
-              (not (location-has-dot? x prev-y)) (move-to cell-ref x prev-y dot))
-          move-y
-            (cond
-              (not (location-has-dot? prev-x y)) (move-to cell-ref prev-x y dot)
-              (not (location-has-dot? next-x y)) (move-to cell-ref next-x y dot)))))))
+          (send-off *agent* #'move-loop))
+        (move-to cell-ref next-x next-y dot)))))
 
-; draw it
+(def dots
+  "list of agents for locations for each dot"
+  (create-dots))
+
+(defn start-move-loop
+  "kicks of the move loop per agent"
+  []
+  (doall (map #(send-off % move-loop) dots)))
+
+(start-move-loop)
+
+; ui
 
 (import
   '(java.awt Color Graphics Dimension)
   '(java.awt.image BufferedImage)
   '(javax.swing JPanel JFrame))
 
-(def scale 5)
-(def width  (* scale dimension))
-(def height (* scale dimension))
+(def scale
+  "pixels per cell"
+  7)
 
-(defn cell-color
-  "pick color for a cell based on wether or not it has a dot"
+(def size
+  "size of cell in pixels"
+  (* scale dimension))
+
+(defn- cell-color
+  "picks color for a cell, based on wether or not it has a dot"
   [cell]
-  (if (location-has-dot? (:x cell) (:y cell))
-    (Color/blue)
-    (Color/yellow)))
+  (if (dot-in-location? (:x cell) (:y cell))
+    (do
+      (:color (:dot cell)))
+    (Color/white)))
 
-(defn render-cell
+(defn- render-cell
   "renders a cell in a given color"
   [bg cell color]
   (let [x     (:x cell)
@@ -124,31 +171,33 @@
       (.setColor (cell-color cell))
       (.fillRect pos-x pos-y end-x end-y))))
 
-(defn render-cells
-  "renders cells"
+(defn- render-cells
+  "renders each of the world's cells"
   [bg world]
   (doseq [cell-ref (flatten world)]
     (let [cell @cell-ref]
       (render-cell bg cell (cell-color cell)))))
 
-(defn render [g]
-  (let [img (BufferedImage. width height (BufferedImage/TYPE_INT_ARGB))
+(defn- render [g]
+  "renders all cells into a buffered image that is drawn to the panel on each tick"
+  (let [img (BufferedImage. size size (BufferedImage/TYPE_INT_ARGB))
         bg  (.createGraphics img)]
     (doto bg
       (.setColor (Color/white))
-      (.fillRect 0 0 width height))
+      (.fillRect 0 0 size size))
     (render-cells bg world)
     (.drawImage g img 0 0 nil)
     (.dispose bg)))
 
-(defn jpanel
+(defn- jpanel
+  "subclasses JPanel to call render when paint is called"
   []
   (proxy [JPanel] []
     (paint [g] (render g))))
 
 (def panel
   (doto (jpanel)
-    (.setPreferredSize (Dimension. width height))))
+    (.setPreferredSize (Dimension. size size))))
 
 (def frame
   (doto (JFrame.)
@@ -157,19 +206,25 @@
     .pack
     .show))
 
-(comment
-  ; demo
+(def animator
+  "agent for the animation loop"
+  (agent nil))
 
-  (def animation-sleep-ms 20)
-  (def animator (agent nil))
-  (defn animation [x]
-    (when running
-      (Thread/sleep animation-sleep-ms)
-      (.repaint panel)
-      (send-off *agent* #'animation))
-    nil)
-  (send-off animator animation)
+(def animation-sleep-ms
+  "sleep time between each iteration of the animation loop"
+  100)
 
-  (def dots (setup-dots))
-  (doall (map #(send-off % move) dots)))
+(defn- animation [x]
+  "animation loop, repaints the jpanel"
+  (when running
+    (Thread/sleep animation-sleep-ms)
+    (.repaint panel)
+    (send-off *agent* #'animation))
+  nil)
 
+(defn start-animation-loop
+  "kicks of the animation loop"
+  []
+  (send-off animator animation))
+
+(start-animation-loop)
